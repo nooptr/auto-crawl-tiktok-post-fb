@@ -1,13 +1,15 @@
 import requests
 import time
-from app.core.config import settings
+
+from app.services.runtime_settings import resolve_runtime_value
 
 def generate_caption(original_caption: str) -> str:
-    if not settings.GEMINI_API_KEY:
+    gemini_api_key = resolve_runtime_value("GEMINI_API_KEY")
+    if not gemini_api_key:
         return f"{original_caption}\n\n#xuhuong #tiktok"
     
     # Sử dụng gemini-2.5-flash để có quota tốt hơn và độ ổn định cao
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
     
     prompt = f"""Bạn là Trùm Copywriter chuyên viral content Facebook. Mệnh lệnh bắt buộc:
 1. Viết lại caption sao cho kịch tính, thú vị, xài emoji hợp lý, độ dài 50-100 từ.
@@ -34,17 +36,17 @@ Caption gốc: {original_caption}"""
                 if 'candidates' in data and data['candidates'] and 'content' in data['candidates'][0]:
                     return data['candidates'][0]['content']['parts'][0]['text'].strip()
                 else:
-                    print(f"AI Warning: Cấu trúc response lạ: {data}")
+                    print(f"AI cảnh báo: Cấu trúc phản hồi lạ: {data}")
             
             elif response.status_code == 429:
-                print(f"AI Rate Limit (429) - Thử lại lần {attempt + 1}/{max_retries}...")
+                print(f"AI bị giới hạn tốc độ (429) - Thử lại lần {attempt + 1}/{max_retries}...")
             else:
-                print(f"AI API Error {response.status_code}: {response.text}")
+                print(f"AI lỗi API {response.status_code}: {response.text}")
                 
             if attempt < max_retries - 1:
                 time.sleep(retry_delay * (attempt + 1)) # Exponential backoff
         except Exception as e:
-            print(f"AI Exception (Lần {attempt + 1}): {e}")
+            print(f"AI gặp ngoại lệ (Lần {attempt + 1}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay * (attempt + 1))
 
@@ -52,11 +54,12 @@ Caption gốc: {original_caption}"""
     return f"{original_caption}\n\n#giaitri #trending"
 
 def generate_reply(user_message: str) -> str:
-    if not settings.GEMINI_API_KEY:
+    gemini_api_key = resolve_runtime_value("GEMINI_API_KEY")
+    if not gemini_api_key:
         return "Cảm ơn bạn đã quan tâm nhé! 💖"
         
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
-    prompt = f"Bạn là CSKH cho Fanpage giải trí TikTok. Trả lời comment khách hàng cực kỳ thân thiện, ngầu, và sinh động với emoji. Câu trả lời thật ngắn gọn.\n\nKhách hàng nhắc: {user_message}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+    prompt = f"Bạn là chăm sóc khách hàng cho trang Facebook giải trí TikTok. Trả lời bình luận khách hàng thật thân thiện, sinh động và ngắn gọn, có dùng emoji phù hợp.\n\nKhách hàng nhắn: {user_message}"
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
@@ -68,8 +71,8 @@ def generate_reply(user_message: str) -> str:
             data = response.json()
             return data['candidates'][0]['content']['parts'][0]['text'].strip()
         else:
-            print(f"AI Reply Error {response.status_code}: {response.text}")
+            print(f"AI trả lời lỗi {response.status_code}: {response.text}")
     except Exception as e:
-        print(f"AI Reply Exception: {e}")
+        print(f"AI trả lời gặp ngoại lệ: {e}")
         
     return "Cảm ơn bạn yêu! 💖"

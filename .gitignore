@@ -44,9 +44,10 @@ dist/
 videos_storage/
 debug_logs.txt
 backend_cron.txt
+backend/runtime.env
 database/*.sqlite
 database/*.db
-
+database/
 # OS
 .DS_Store
 Thumbs.db

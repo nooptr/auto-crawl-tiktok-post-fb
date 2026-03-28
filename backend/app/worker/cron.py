@@ -1,104 +1,192 @@
-from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy.orm import Session
-from app.core.database import SessionLocal
-from app.models.models import Video, Campaign, FacebookPage
-from app.services.ai_generator import generate_caption
-from app.services.fb_graph import upload_video_to_facebook
-import traceback
 import os
+import socket
+import traceback
 from datetime import datetime
 
-scheduler = BackgroundScheduler()
+from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy.orm import Session
 
-# def ai_caption_job():
-#     print("CRON: Đang quét video thiếu AI Caption...")
-#     db: Session = SessionLocal()
-#     try:
-#         # Lấy các video chưa có AI caption và chưa đăng
-#         videos = db.query(Video).filter(
-#             Video.ai_caption == None,
-#             Video.status != 'posted'
-#         ).limit(5).all() # Xử lý mỗi lần 5 video để tránh rate limit
-#         
-#         for vid in videos:
-#             print(f"CRON: Đang sinh AI Caption cho video {vid.original_id}...", flush=True)
-#             try:
-#                 vid.ai_caption = generate_caption(vid.original_caption)
-#                 db.commit()
-#                 print(f"CRON: Đã sinh xong AI Caption cho {vid.original_id}", flush=True)
-#             except Exception as e:
-#                 print(f"CRON Error sinh caption cho {vid.original_id}: {e}")
-#                 
-#     except Exception as e:
-#         print(f"CRON AI Job Error: {e}")
-#     finally:
-#         db.close()
+from app.core.config import settings
+from app.core.database import SessionLocal
+from app.models.models import Campaign, CampaignStatus, FacebookPage, Video, VideoStatus
+from app.services.ai_generator import generate_caption
+from app.services.fb_graph import upload_video_to_facebook
+from app.services.observability import record_event, update_worker_heartbeat
+from app.services.security import decrypt_secret
+from app.worker.tasks import process_task_queue
+
+scheduler = BackgroundScheduler()
+WORKER_NAME = f"{settings.APP_ROLE}@{socket.gethostname()}"
+
 
 def auto_post_job():
-    print("CRON: Đang quét video sẵn sàng upload (Throttling: 1 video/page/minute)...")
     db: Session = SessionLocal()
+    update_worker_heartbeat(WORKER_NAME, app_role=settings.APP_ROLE, status="quét lịch đăng", db=db)
     try:
         now = datetime.utcnow()
-        # Lấy danh sách tất cả các Fanpage để xử lý riêng biệt
         pages = db.query(FacebookPage).all()
-        
-        for page in pages:
-            # Với mỗi Fanpage, chỉ lấy DUY NHẤT 1 video cũ nhất đang chờ
-            vid = db.query(Video).join(Campaign).filter(
-                Campaign.target_page_id == page.page_id,
-                Video.status == 'ready',
-                Video.publish_time <= now
-            ).order_by(Video.publish_time.asc()).first()
-            
-            if not vid:
-                continue
-                
-            print(f"CRON: [Page {page.page_name}] Đang xử lý video {vid.original_id}...")
-            
-            if vid.campaign.auto_post:
-                # [Optimization] Chỉ sinh AI caption vào đúng thời điểm đăng bài (Just-In-Time)
-                if not vid.ai_caption:
-                    print(f"CRON: [Just-In-Time] Đang sinh AI Caption qua Gemini cho Page {page.page_name}...")
-                    vid.ai_caption = generate_caption(vid.original_caption)
-                    db.commit() # Lưu vào DB ngay lập tức
-                    print(f"CRON: [SUCCESS] Đã sinh Caption AI.")
 
-                # Upload Facebook
-                print(f"CRON: Uploading video {vid.original_id} tới Facebook...")
-                res = upload_video_to_facebook(
-                    file_path=vid.file_path,
-                    caption=vid.ai_caption,
-                    page_id=page.page_id,
-                    access_token=page.long_lived_access_token
+        for page in pages:
+            vid = (
+                db.query(Video)
+                .join(Campaign)
+                .filter(
+                    Campaign.target_page_id == page.page_id,
+                    Campaign.status == CampaignStatus.active,
+                    Video.status == VideoStatus.ready,
+                    Video.publish_time <= now,
                 )
-                
-                if 'id' in res:
-                    vid.fb_post_id = res['id']
-                    vid.status = 'posted'
-                    print(f"CRON: [SUCCESS] Page {page.page_name} -> Post ID: {vid.fb_post_id}")
-                    
-                    # Xóa file local sau khi upload
-                    if vid.file_path and os.path.exists(vid.file_path):
-                        try:
-                            # Tách logic xóa file sang log riêng
-                            os.remove(vid.file_path)
-                            print(f"CRON: Đã xóa file local: {vid.file_path}")
-                        except Exception as e:
-                            print(f"CRON: Lỗi khi xóa file: {e}")
-                else:
-                    vid.status = 'failed'
-                    vid.fb_post_id = str(res.get('error', res))
-                    print(f"CRON: [FAILED] Page {page.page_name} -> Error: {res}")
-                
+                .order_by(Video.publish_time.asc())
+                .first()
+            )
+
+            if not vid or not vid.campaign.auto_post:
+                continue
+
+            update_worker_heartbeat(
+                WORKER_NAME,
+                app_role=settings.APP_ROLE,
+                status="đang đăng video",
+                current_task_type="auto_post",
+                current_task_id=str(vid.id),
+                details={"page_id": page.page_id, "video_id": str(vid.id)},
+                db=db,
+            )
+
+            try:
+                access_token = decrypt_secret(page.long_lived_access_token)
+            except ValueError as exc:
+                vid.status = VideoStatus.failed
+                vid.last_error = str(exc)
+                vid.retry_count = (vid.retry_count or 0) + 1
                 db.commit()
-    except Exception as e:
-        print(f"CRON Lỗi: {e}")
-        traceback.print_exc()
+                continue
+
+            if not access_token:
+                vid.status = VideoStatus.failed
+                vid.last_error = "Trang Facebook chưa có mã truy cập hợp lệ."
+                vid.retry_count = (vid.retry_count or 0) + 1
+                db.commit()
+                continue
+
+            if not vid.ai_caption:
+                try:
+                    vid.ai_caption = generate_caption(vid.original_caption)
+                    db.commit()
+                except Exception as exc:
+                    vid.status = VideoStatus.failed
+                    vid.last_error = f"Không thể tạo chú thích AI: {exc}"
+                    vid.retry_count = (vid.retry_count or 0) + 1
+                    db.commit()
+                    record_event(
+                        "video",
+                        "error",
+                        "Tạo chú thích AI trước khi đăng thất bại.",
+                        db=db,
+                        details={"video_id": str(vid.id), "page_id": page.page_id, "error": str(exc)},
+                    )
+                    continue
+
+            res = upload_video_to_facebook(
+                file_path=vid.file_path,
+                caption=vid.ai_caption,
+                page_id=page.page_id,
+                access_token=access_token,
+            )
+
+            if "id" in res:
+                vid.fb_post_id = res["id"]
+                vid.status = VideoStatus.posted
+                vid.last_error = None
+                record_event(
+                    "video",
+                    "info",
+                    "Đã đăng video thành công.",
+                    db=db,
+                    details={"video_id": str(vid.id), "page_id": page.page_id, "fb_post_id": vid.fb_post_id},
+                )
+                if vid.file_path and os.path.exists(vid.file_path):
+                    try:
+                        os.remove(vid.file_path)
+                    except Exception as exc:
+                        record_event(
+                            "video",
+                            "warning",
+                            "Không thể xóa tệp tạm sau khi đăng.",
+                            db=db,
+                            details={"video_id": str(vid.id), "file_path": vid.file_path, "error": str(exc)},
+                        )
+            else:
+                vid.status = VideoStatus.failed
+                vid.last_error = str(res.get("error", res))
+                vid.retry_count = (vid.retry_count or 0) + 1
+                record_event(
+                    "video",
+                    "error",
+                    "Đăng video lên Facebook thất bại.",
+                    db=db,
+                    details={"video_id": str(vid.id), "page_id": page.page_id, "response": res},
+                )
+
+            db.commit()
+    except Exception as exc:
+        record_event(
+            "worker",
+            "error",
+            "Tác vụ quét lịch đăng gặp lỗi.",
+            db=db,
+            details={"error": str(exc), "traceback": traceback.format_exc()},
+        )
     finally:
+        update_worker_heartbeat(WORKER_NAME, app_role=settings.APP_ROLE, status="idle", db=db)
         db.close()
 
+
+def process_task_queue_job():
+    processed = process_task_queue(WORKER_NAME)
+    if processed:
+        record_event(
+            "queue",
+            "info",
+            "Đã xử lý xong một đợt tác vụ nền.",
+            details={"worker_name": WORKER_NAME, "processed": processed},
+        )
+
+
+def heartbeat_job():
+    update_worker_heartbeat(WORKER_NAME, app_role=settings.APP_ROLE, status="idle")
+
+
 def start_scheduler():
-    # Gỡ bỏ ai_caption_job để tiết kiệm API Limit của Gemini
-    # scheduler.add_job(ai_caption_job, 'interval', seconds=30)
-    scheduler.add_job(auto_post_job, 'interval', minutes=1)
-    scheduler.start()
+    if not scheduler.get_job("auto_post_job"):
+        scheduler.add_job(
+            auto_post_job,
+            "interval",
+            id="auto_post_job",
+            minutes=settings.SCHEDULER_INTERVAL_MINUTES,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    if not scheduler.get_job("process_task_queue_job"):
+        scheduler.add_job(
+            process_task_queue_job,
+            "interval",
+            id="process_task_queue_job",
+            seconds=settings.TASK_QUEUE_POLL_SECONDS,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    if not scheduler.get_job("heartbeat_job"):
+        scheduler.add_job(
+            heartbeat_job,
+            "interval",
+            id="heartbeat_job",
+            seconds=max(10, settings.TASK_QUEUE_POLL_SECONDS),
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    if not scheduler.running:
+        scheduler.start()

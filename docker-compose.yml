@@ -27,6 +27,8 @@ services:
   backend:
     build: ./backend
     container_name: social_backend
+    env_file:
+      - ./backend/runtime.env
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -42,9 +44,62 @@ services:
         condition: service_healthy
     environment:
       - DATABASE_URL=postgresql://admin:adminpassword@db/social_auto
-      - GEMINI_API_KEY=
-      - ADMIN_PASSWORD=
-      - BASE_URL=
+      - DOWNLOAD_DIR=/app/downloads
+      - ADMIN_PASSWORD=admin123
+      - DEFAULT_ADMIN_USERNAME=admin
+      - DEFAULT_ADMIN_DISPLAY_NAME=Quản trị viên
+      - JWT_SECRET=
+      - TOKEN_ENCRYPTION_SECRET=
+      - AUTH_TOKEN_EXPIRE_MINUTES=480
+      - CORS_ALLOW_ORIGINS=http://localhost:5173
+      - PASSWORD_MIN_LENGTH=8
+      - SCHEDULER_INTERVAL_MINUTES=1
+      - TASK_QUEUE_POLL_SECONDS=5
+      - WORKER_STALE_SECONDS=30
+      - WORKER_BATCH_SIZE=3
+      - SCHEDULER_ENABLED=false
+      - AUTO_CREATE_SCHEMA=false
+      - BACKGROUND_JOBS_MODE=dedicated-worker
+      - APP_ROLE=api
+      - LOG_LEVEL=INFO
+
+  worker:
+    build: ./backend
+    container_name: social_worker
+    env_file:
+      - ./backend/runtime.env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: always
+    logging: *default-logging
+    command: ["sh", "-c", "alembic upgrade head && python -m app.worker.run"]
+    volumes:
+      - ./backend:/app
+      - ./videos_storage:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://admin:adminpassword@db/social_auto
+      - DOWNLOAD_DIR=/app/downloads
+      - ADMIN_PASSWORD=admin123
+      - DEFAULT_ADMIN_USERNAME=admin
+      - DEFAULT_ADMIN_DISPLAY_NAME=Quản trị viên
+      - JWT_SECRET=
+      - TOKEN_ENCRYPTION_SECRET=
+      - AUTH_TOKEN_EXPIRE_MINUTES=480
+      - CORS_ALLOW_ORIGINS=http://localhost:5173
+      - PASSWORD_MIN_LENGTH=8
+      - SCHEDULER_INTERVAL_MINUTES=1
+      - TASK_QUEUE_POLL_SECONDS=5
+      - WORKER_STALE_SECONDS=30
+      - WORKER_BATCH_SIZE=3
+      - SCHEDULER_ENABLED=true
+      - AUTO_CREATE_SCHEMA=false
+      - BACKGROUND_JOBS_MODE=dedicated-worker
+      - APP_ROLE=worker
+      - LOG_LEVEL=INFO
 
   frontend:
     build: ./frontend
@@ -62,8 +117,8 @@ services:
     container_name: social_tunnel
     restart: always
     logging: *default-logging
-    environment:
-      - TUNNEL_TOKEN=
+    env_file:
+      - ./backend/runtime.env
     command: tunnel --no-autoupdate run
     depends_on:
       backend:

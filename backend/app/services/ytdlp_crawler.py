@@ -3,16 +3,18 @@ import os
 import uuid
 from pathlib import Path
 
-DOWNLOAD_DIR = "/app/downloads"
+from app.core.config import settings
+
+DOWNLOAD_DIR = settings.DOWNLOAD_DIR
 
 def extract_metadata(url: str):
     ydl_opts = {
         'skip_download': True,
         'quiet': True,
-        'extract_flat': False, # get full info
+        'extract_flat': False,  # Lấy đầy đủ thông tin metadata
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        # If url is a user profile, this will return a playlist of videos
+        # Nếu URL là trang hồ sơ người dùng, hàm sẽ trả về danh sách video
         info = ydl.extract_info(url, download=False)
         return info
 
@@ -23,7 +25,7 @@ def download_video(url: str, filename_prefix: str = "video"):
     out_path = os.path.join(DOWNLOAD_DIR, filename)
 
     ydl_opts = {
-        'format': 'best[vcodec^=h264]/best[vcodec^=avc]/best', # Ép bằng chính xác tên h264 vì TikTok không dùng chữ avc
+        'format': 'best[vcodec^=h264]/best[vcodec^=avc]/best',  # Ưu tiên H.264/AVC để Facebook xử lý ổn định hơn
         'outtmpl': out_path,
         'quiet': True,
         'no_warnings': True,
