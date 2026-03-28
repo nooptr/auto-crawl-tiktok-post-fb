@@ -1,64 +1,180 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
 
+:root {
+  --shell-bg: #012456;
+  --panel-bg: rgba(4, 39, 89, 0.84);
+  --panel-strong-bg: rgba(8, 48, 109, 0.92);
+  --card-bg: rgba(7, 44, 98, 0.84);
+  --line-soft: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --text-main: #f7fbff;
+  --text-soft: #ccdaf0;
+  --text-muted: #8eabd2;
+  --glow-cyan: rgba(140, 190, 255, 0.2);
+  --glow-amber: rgba(110, 167, 255, 0.14);
+}
+
 @layer base {
+  * {
+    border-color: var(--line-soft);
+  }
+
+  html {
+    background: var(--shell-bg);
+  }
+
   body {
+    min-height: 100vh;
     font-family: 'Inter', system-ui, sans-serif;
-    color: #e2e8f0; /* slate-200 */
-    background-color: #012456; /* PowerShell Blue */
+    color: var(--text-main);
+    background:
+      radial-gradient(circle at top left, rgba(154, 200, 255, 0.15), transparent 26%),
+      radial-gradient(circle at bottom right, rgba(93, 149, 236, 0.12), transparent 24%),
+      linear-gradient(180deg, #022b65 0%, #012456 48%, #011d49 100%);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  .font-display {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  ::selection {
+    background: rgba(153, 196, 255, 0.24);
+    color: #ffffff;
   }
 }
 
 @layer utilities {
-  .premium-card {
-    background-color: rgba(0, 0, 0, 0.2); 
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 1rem;
-    box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.2);
+  .panel-surface {
+    background: linear-gradient(180deg, rgba(6, 42, 96, 0.94) 0%, rgba(3, 33, 79, 0.9) 100%);
+    border: 1px solid var(--line-soft);
+    box-shadow:
+      0 22px 50px rgba(0, 11, 32, 0.34),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(18px);
   }
-  
-  .premium-input {
-    background-color: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 0.5rem;
-    color: #f8fafc;
-    transition: all 0.2s ease;
+
+  .panel-strong {
+    background:
+      radial-gradient(circle at top left, var(--glow-cyan), transparent 42%),
+      linear-gradient(180deg, rgba(8, 49, 112, 0.96) 0%, rgba(3, 36, 86, 0.94) 100%);
+    border: 1px solid var(--line-strong);
+    box-shadow:
+      0 28px 70px rgba(0, 14, 38, 0.38),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(20px);
   }
-  
-  .premium-input:focus {
+
+  .metric-card {
+    background:
+      radial-gradient(circle at top right, rgba(153, 196, 255, 0.08), transparent 34%),
+      linear-gradient(180deg, rgba(9, 49, 109, 0.92) 0%, rgba(3, 35, 82, 0.9) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 20px 46px rgba(0, 12, 34, 0.28);
+  }
+
+  .field-input {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.045);
+    color: var(--text-main);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .field-input::placeholder {
+    color: rgba(180, 198, 216, 0.38);
+  }
+
+  .field-input:focus {
     outline: none;
-    border-color: #38bdf8; /* Sky 400 */
-    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    border-color: rgba(153, 196, 255, 0.42);
+    background: rgba(255, 255, 255, 0.07);
+    box-shadow: 0 0 0 4px rgba(153, 196, 255, 0.14);
   }
 
-  .premium-button {
-    background-color: #f8fafc;
+  .btn-primary {
+    background: linear-gradient(135deg, #f4f8ff 0%, #bfd6ff 100%);
     color: #012456;
-    font-weight: 600;
-    border-radius: 0.5rem;
-    transition: all 0.2s ease;
-  }
-  
-  .premium-button:hover {
-    background-color: #ffffff;
-    box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+    box-shadow: 0 12px 28px rgba(191, 214, 255, 0.2);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
   }
 
-  /* Custom scrollbar optimized for dark blue background */
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 16px 34px rgba(191, 214, 255, 0.28);
   }
+
+  .btn-secondary {
+    border: 1px solid rgba(153, 196, 255, 0.24);
+    background: rgba(153, 196, 255, 0.1);
+    color: #e6f0ff;
+    transition: transform 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
+  }
+
+  .btn-secondary:hover {
+    transform: translateY(-1px);
+    background: rgba(153, 196, 255, 0.16);
+    border-color: rgba(153, 196, 255, 0.36);
+  }
+
+  .btn-ghost {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-soft);
+    transition: transform 0.18s ease, background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  }
+
+  .btn-ghost:hover {
+    transform: translateY(-1px);
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+
+  .sidebar-link {
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .sidebar-link:hover {
+    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .sidebar-link-active {
+    border-color: rgba(153, 196, 255, 0.24);
+    background:
+      radial-gradient(circle at top left, rgba(153, 196, 255, 0.14), transparent 55%),
+      rgba(153, 196, 255, 0.08);
+  }
+
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
-    border-radius: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.16);
   }
+
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.35);
+    background: rgba(255, 255, 255, 0.24);
   }
 }

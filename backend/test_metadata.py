@@ -11,7 +11,7 @@ def test_tiktok_metadata(url):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
-            # Chỉ lấy các trường liên quan đến caption/title
+            # Chỉ lấy các trường liên quan đến chú thích và tiêu đề
             interesting_fields = {
                 'id': info.get('id'),
                 'title': info.get('title'),
@@ -23,7 +23,7 @@ def test_tiktok_metadata(url):
             }
             print(json.dumps(interesting_fields, indent=4, ensure_ascii=False))
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Lỗi: {e}")
 
 if __name__ == "__main__":
     test_url = sys.argv[1] if len(sys.argv) > 1 else "https://www.tiktok.com/@vneconomy.vn/video/7349940173516033281"

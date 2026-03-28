@@ -1,14 +1,20 @@
+import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, DateTime, Enum, ForeignKey, Integer
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy import JSON, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, UniqueConstraint, Uuid
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+
 from app.core.database import Base
-import enum
+
+JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
+
 
 class CampaignStatus(str, enum.Enum):
     active = "active"
     paused = "paused"
+
 
 class VideoStatus(str, enum.Enum):
     pending = "pending"
@@ -17,10 +23,12 @@ class VideoStatus(str, enum.Enum):
     posted = "posted"
     failed = "failed"
 
+
 class InteractionStatus(str, enum.Enum):
     pending = "pending"
     replied = "replied"
     failed = "failed"
+
 
 class TaskStatus(str, enum.Enum):
     queued = "queued"
@@ -28,48 +36,70 @@ class TaskStatus(str, enum.Enum):
     completed = "completed"
     failed = "failed"
 
+
+class UserRole(str, enum.Enum):
+    admin = "admin"
+    operator = "operator"
+
+
 class Campaign(Base):
     __tablename__ = "campaigns"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, index=True)
-    source_url = Column(String)  # TikTok URL
+    source_url = Column(String)
     status = Column(Enum(CampaignStatus), default=CampaignStatus.active)
     auto_post = Column(Boolean, default=False)
     target_page_id = Column(String, nullable=True)
     schedule_interval = Column(Integer, default=0)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_sync_status = Column(String, default="idle")
+    last_sync_error = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     videos = relationship("Video", back_populates="campaign")
 
+
 class Video(Base):
     __tablename__ = "videos"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "original_id", name="uq_videos_campaign_original"),
+    )
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id"))
-    original_id = Column(String, unique=True, index=True)
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id = Column(Uuid(as_uuid=True), ForeignKey("campaigns.id"))
+    original_id = Column(String, index=True)
+    source_video_url = Column(String, nullable=True)
     file_path = Column(String, nullable=True)
     original_caption = Column(String, nullable=True)
     ai_caption = Column(String, nullable=True)
     status = Column(Enum(VideoStatus), default=VideoStatus.pending)
     publish_time = Column(DateTime, nullable=True)
     fb_post_id = Column(String, nullable=True)
+    last_error = Column(String, nullable=True)
+    retry_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     campaign = relationship("Campaign", back_populates="videos")
+
 
 class FacebookPage(Base):
     __tablename__ = "facebook_pages"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     page_id = Column(String, unique=True, index=True)
     page_name = Column(String)
     long_lived_access_token = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class InteractionLog(Base):
     __tablename__ = "interactions_log"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     page_id = Column(String, ForeignKey("facebook_pages.page_id"))
     post_id = Column(String)
     comment_id = Column(String, unique=True)
@@ -77,13 +107,81 @@ class InteractionLog(Base):
     user_message = Column(String)
     ai_reply = Column(String, nullable=True)
     status = Column(Enum(InteractionStatus), default=InteractionStatus.pending)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class TaskQueue(Base):
     __tablename__ = "task_queue"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     task_type = Column(String, index=True)
-    payload = Column(JSONB)
+    entity_type = Column(String, index=True, nullable=True)
+    entity_id = Column(String, index=True, nullable=True)
+    payload = Column(JSON_TYPE)
     status = Column(Enum(TaskStatus), default=TaskStatus.queued)
+    priority = Column(Integer, default=0)
     attempts = Column(Integer, default=0)
+    max_attempts = Column(Integer, default=3)
+    last_error = Column(String, nullable=True)
+    available_at = Column(DateTime, default=datetime.utcnow)
     locked_at = Column(DateTime, nullable=True)
+    locked_by = Column(String, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username = Column(String, unique=True, index=True)
+    display_name = Column(String, nullable=True)
+    password_hash = Column(String, nullable=False)
+    role = Column(Enum(UserRole), default=UserRole.admin, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    must_change_password = Column(Boolean, default=False, nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    worker_name = Column(String, unique=True, index=True)
+    app_role = Column(String, nullable=False)
+    hostname = Column(String, nullable=True)
+    status = Column(String, default="idle", nullable=False)
+    current_task_id = Column(String, nullable=True)
+    current_task_type = Column(String, nullable=True)
+    details = Column(JSON_TYPE, nullable=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SystemEvent(Base):
+    __tablename__ = "system_events"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scope = Column(String, index=True, nullable=False)
+    level = Column(String, index=True, nullable=False)
+    message = Column(String, nullable=False)
+    details = Column(JSON_TYPE, nullable=True)
+    actor_user_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class RuntimeSetting(Base):
+    __tablename__ = "runtime_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=True)
+    is_secret = Column(Boolean, default=False, nullable=False)
+    updated_by_user_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
