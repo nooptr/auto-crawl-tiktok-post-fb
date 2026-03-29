@@ -302,10 +302,10 @@ function LoginScreen({ loginUser, setLoginUser, loginPass, setLoginPass, loginEr
             <div>
               <StatusPill tone="sky" icon={Zap}>Trạm điều phối nội dung</StatusPill>
               <h1 className="mt-6 max-w-3xl font-display text-5xl font-semibold leading-tight text-white">
-                Một mặt bàn vận hành gọn hơn cho crawl, lịch đăng và phản hồi Facebook.
+                Quản lý chiến dịch, lịch đăng và phản hồi Facebook trong một nơi.
               </h1>
               <p className="mt-5 max-w-2xl text-base leading-8 text-[var(--text-soft)]">
-                Mọi khu vực chính đều nằm gọn trong một mặt bàn làm việc.
+                Theo dõi queue, worker, webhook và cấu hình hệ thống từ cùng một dashboard.
               </p>
             </div>
             <div className="mt-10 grid gap-4 xl:grid-cols-3">
@@ -321,12 +321,12 @@ function LoginScreen({ loginUser, setLoginUser, loginPass, setLoginPass, loginEr
             <div className="mt-6">
               <div className="text-[11px] uppercase tracking-[0.32em] text-[var(--text-muted)]">Đăng nhập vận hành</div>
               <h2 className="mt-3 font-display text-3xl font-semibold text-white">Vào trạm điều phối</h2>
-              <p className="mt-3 text-sm leading-7 text-[var(--text-soft)]">Đăng nhập để vào dashboard.</p>
+              <p className="mt-3 text-sm leading-7 text-[var(--text-soft)]">Dùng tài khoản quản trị hoặc vận hành để bắt đầu.</p>
             </div>
             <form onSubmit={handleLogin} className="mt-8 space-y-4">
               <label className="block space-y-2">
                 <span className="text-xs uppercase tracking-[0.28em] text-[var(--text-muted)]">Tên đăng nhập</span>
-                <input type="text" required className={FIELD_CLASS} placeholder="admin" value={loginUser} onChange={(event) => setLoginUser(event.target.value)} />
+                <input type="text" required className={FIELD_CLASS} placeholder="Nhập tên đăng nhập" value={loginUser} onChange={(event) => setLoginUser(event.target.value)} />
               </label>
               <label className="block space-y-2">
                 <span className="text-xs uppercase tracking-[0.28em] text-[var(--text-muted)]">Mật khẩu</span>
@@ -360,7 +360,7 @@ function App() {
   const [filters, setFilters] = useState({ status: 'all', campaignId: 'all' });
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [sessionExpiresAt, setSessionExpiresAt] = useState(localStorage.getItem('token_expires_at'));
-  const [loginUser, setLoginUser] = useState(localStorage.getItem('last_username') || 'admin');
+  const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
   const [loginError, setLoginError] = useState('');
   const [notice, setNotice] = useState(null);
@@ -717,7 +717,6 @@ function App() {
         setSessionExpiresAt(expiresAt);
         setCurrentUser(payload.user || null);
         localStorage.setItem('token', payload.access_token);
-        localStorage.setItem('last_username', loginUser);
         if (expiresAt) localStorage.setItem('token_expires_at', expiresAt);
         else localStorage.removeItem('token_expires_at');
         setLoginError('');
