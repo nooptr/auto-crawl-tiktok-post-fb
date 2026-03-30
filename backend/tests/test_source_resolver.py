@@ -161,6 +161,61 @@ def test_extract_source_entries_filters_to_youtube_shorts(monkeypatch):
     assert entries[1].source_video_url == "https://www.youtube.com/shorts/short-3"
 
 
+def test_extract_source_entries_keeps_single_short_when_webpage_url_is_watch(monkeypatch):
+    def fake_extract_metadata(_url):
+        return {
+            "id": "abc123",
+            "webpage_url": "https://www.youtube.com/watch?v=abc123",
+            "original_url": "https://www.youtube.com/shorts/abc123",
+            "title": "Short single",
+            "description": "Mo ta short single",
+        }
+
+    monkeypatch.setattr("app.services.ytdlp_crawler.extract_metadata", fake_extract_metadata)
+
+    entries = extract_source_entries(
+        "https://www.youtube.com/shorts/abc123",
+        source_platform="youtube",
+        source_kind="youtube_short",
+    )
+
+    assert len(entries) == 1
+    assert entries[0].original_id == "abc123"
+    assert entries[0].source_video_url == "https://www.youtube.com/shorts/abc123"
+    assert entries[0].source_kind == "youtube_short"
+
+
+def test_extract_metadata_ignores_playlist_entry_errors(monkeypatch):
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured["opts"] = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download=False):
+            captured["url"] = url
+            captured["download"] = download
+            return {"entries": []}
+
+    monkeypatch.setattr("app.services.ytdlp_crawler.yt_dlp.YoutubeDL", FakeYDL)
+
+    result = extract_source_entries(
+        "https://www.youtube.com/@creator/shorts",
+        source_platform="youtube",
+        source_kind="youtube_shorts_feed",
+    )
+
+    assert result == []
+    assert captured["opts"]["ignoreerrors"] is True
+    assert captured["download"] is False
+
+
 def test_sync_campaign_content_uses_normalized_youtube_entries(monkeypatch, db_session):
     campaign = Campaign(
         name="YouTube feed campaign",

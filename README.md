@@ -77,6 +77,7 @@ Hiện tại repo đã có đầy đủ các phần sau:
 - `runtime config` ngay trên dashboard
 - `comment AI` và `inbox AI` tách prompt riêng theo từng fanpage
 - `inbox schedule` và `cooldown` theo fanpage
+- import nhiều fanpage từ một app Meta bằng `User Access Token`
 - `worker heartbeat`, `system events`, `task monitoring`
 - `runtime settings` được lưu DB và sinh ra `backend/runtime.env`
 - `source resolver` để phân biệt TikTok video/profile/shortlink và YouTube Shorts đơn/feed
@@ -411,6 +412,20 @@ Vào khu `Bảo mật` và đổi ngay mật khẩu.
 - `FB_APP_SECRET`
 - `GEMINI_API_KEY`
 - `TUNNEL_TOKEN` nếu dùng tunnel
+
+### Bước 5. Kết nối fanpage
+
+Có 2 cách:
+
+- Khuyến nghị: dán `User Access Token` của app Meta, bấm `Tải danh sách fanpage`, chọn nhiều trang rồi `Import fanpage đã chọn`
+- Dự phòng: nhập tay `page_id`, `page_name`, `Page Access Token`
+
+Lưu ý:
+
+- Nếu muốn lấy danh sách nhiều page, phải dùng `User Access Token`
+- `Page Access Token` chỉ phù hợp để thêm riêng lẻ một fanpage
+- Có thể dùng cùng `User Access Token` để `Làm mới token fanpage đã có`
+- Có thể xóa fanpage ngay trên dashboard, nhưng hệ thống sẽ chặn nếu page đó vẫn đang được campaign sử dụng
 
 ### Bước 5. Thêm fanpage
 

@@ -30,6 +30,7 @@ def extract_metadata(url: str):
     ydl_opts = {
         "skip_download": True,
         "quiet": True,
+        "ignoreerrors": True,
         "extract_flat": False,
     }
     try:
@@ -71,20 +72,27 @@ def _is_tiktok_video_url(url: str | None) -> bool:
 
 
 def _build_entry_url(entry: dict, source_platform: str, source_kind_hint: str) -> str | None:
+    original_url = entry.get("original_url")
+    if isinstance(original_url, str) and original_url.startswith("http"):
+        if source_platform != "youtube" or _is_youtube_short_url(original_url):
+            return original_url
+
     webpage_url = entry.get("webpage_url")
     if isinstance(webpage_url, str) and webpage_url.startswith("http"):
+        if source_platform != "youtube" or _is_youtube_short_url(webpage_url):
+            return webpage_url
         return webpage_url
+
+    entry_id = entry.get("id")
+    if source_platform == "youtube" and source_kind_hint in {"youtube_short", "youtube_shorts_feed"} and entry_id:
+        return f"https://www.youtube.com/shorts/{entry_id}"
 
     direct_url = entry.get("url")
     if isinstance(direct_url, str) and direct_url.startswith("http"):
         return direct_url
 
-    entry_id = entry.get("id")
     if not entry_id:
         return None
-
-    if source_platform == "youtube" and source_kind_hint in {"youtube_short", "youtube_shorts_feed"}:
-        return f"https://www.youtube.com/shorts/{entry_id}"
 
     return None
 

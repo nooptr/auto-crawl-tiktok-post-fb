@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
+from app.api.auth import require_admin, require_authenticated_user
 from app.core.database import get_db
-from app.models.models import FacebookPage
+from app.models.models import Campaign, FacebookPage, InboxConversation, InboxMessageLog, InteractionLog, TaskQueue, User
 from app.services.observability import record_event
 from app.services.security import decrypt_secret, encrypt_secret, is_secret_encrypted, mask_secret
-from app.services.fb_graph import inspect_page_access, inspect_page_messenger_subscription, subscribe_page_to_app
+from app.services.fb_graph import inspect_page_access, inspect_page_messenger_subscription, inspect_user_pages, subscribe_page_to_app
 
 router = APIRouter(prefix="/facebook", tags=["Trang Facebook"])
 PAGE_WEBHOOK_REQUIRED_FIELDS = ("messages", "feed")
@@ -14,6 +15,20 @@ class FacebookPageCreate(BaseModel):
     page_id: str
     page_name: str
     long_lived_access_token: str
+
+
+class FacebookPageDiscoveryRequest(BaseModel):
+    user_access_token: str
+
+
+class FacebookPageBulkImportRequest(BaseModel):
+    user_access_token: str
+    page_ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class FacebookPageBulkRefreshRequest(BaseModel):
+    user_access_token: str
+    page_ids: list[str] = Field(default_factory=list)
 
 
 class FacebookAutomationUpdate(BaseModel):
@@ -95,8 +110,110 @@ def serialize_page_config(page: FacebookPage) -> dict:
         "message_reply_cooldown_minutes": page.message_reply_cooldown_minutes or 0,
     }
 
+
+def serialize_discovered_page(page_data: dict, *, existing_page_ids: set[str] | None = None) -> dict:
+    existing_page_ids = existing_page_ids or set()
+    page_access_token = (page_data.get("page_access_token") or "").strip()
+    return {
+        "page_id": page_data.get("page_id"),
+        "page_name": page_data.get("page_name"),
+        "page_link": page_data.get("page_link"),
+        "category": page_data.get("category"),
+        "tasks": page_data.get("tasks") or [],
+        "has_page_access_token": bool(page_access_token),
+        "token_preview": mask_secret(page_access_token) if page_access_token else None,
+        "already_configured": page_data.get("page_id") in existing_page_ids,
+    }
+
+
+def _upsert_facebook_page(db: Session, *, page_id: str, page_name: str, access_token: str) -> FacebookPage:
+    page = db.query(FacebookPage).filter(FacebookPage.page_id == page_id).first()
+    if page:
+        page.page_name = page_name
+        page.long_lived_access_token = encrypt_secret(access_token)
+        return page
+
+    page = FacebookPage(
+        page_id=page_id,
+        page_name=page_name,
+        long_lived_access_token=encrypt_secret(access_token),
+    )
+    db.add(page)
+    return page
+
+
+def _load_discovered_pages_by_id(normalized_token: str) -> tuple[dict, dict[str, dict]]:
+    discovery = inspect_user_pages(normalized_token)
+    if not discovery.get("ok"):
+        raise HTTPException(status_code=400, detail=discovery.get("message", "Không thể tải danh sách fanpage."))
+
+    discovered_pages = {
+        (page.get("page_id") or "").strip(): page
+        for page in discovery.get("pages", [])
+        if page.get("page_id")
+    }
+    return discovery, discovered_pages
+
+
+def _delete_page_related_data(db: Session, page_id: str) -> dict:
+    message_log_ids = [
+        str(log_id)
+        for (log_id,) in db.query(InboxMessageLog.id).filter(InboxMessageLog.page_id == page_id).all()
+    ]
+    interaction_log_ids = [
+        str(log_id)
+        for (log_id,) in db.query(InteractionLog.id).filter(InteractionLog.page_id == page_id).all()
+    ]
+
+    deleted_task_count = 0
+    if message_log_ids:
+        deleted_task_count += (
+            db.query(TaskQueue)
+            .filter(
+                TaskQueue.entity_type == "inbox_message_log",
+                TaskQueue.entity_id.in_(message_log_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+    if interaction_log_ids:
+        deleted_task_count += (
+            db.query(TaskQueue)
+            .filter(
+                TaskQueue.entity_type == "interaction_log",
+                TaskQueue.entity_id.in_(interaction_log_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+
+    deleted_message_logs = (
+        db.query(InboxMessageLog)
+        .filter(InboxMessageLog.page_id == page_id)
+        .delete(synchronize_session=False)
+    )
+    deleted_conversations = (
+        db.query(InboxConversation)
+        .filter(InboxConversation.page_id == page_id)
+        .delete(synchronize_session=False)
+    )
+    deleted_interactions = (
+        db.query(InteractionLog)
+        .filter(InteractionLog.page_id == page_id)
+        .delete(synchronize_session=False)
+    )
+
+    return {
+        "deleted_message_logs": deleted_message_logs,
+        "deleted_conversations": deleted_conversations,
+        "deleted_interactions": deleted_interactions,
+        "deleted_tasks": deleted_task_count,
+    }
+
 @router.post("/config")
-def set_facebook_config(page_in: FacebookPageCreate, db: Session = Depends(get_db)):
+def set_facebook_config(
+    page_in: FacebookPageCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_authenticated_user),
+):
     normalized_token = page_in.long_lived_access_token.strip()
 
     if get_token_kind(normalized_token) == "legacy_webhook":
@@ -136,8 +253,191 @@ def set_facebook_config(page_in: FacebookPageCreate, db: Session = Depends(get_d
         "validation": inspection,
     }
 
+
+@router.post("/config/discover-pages")
+def discover_facebook_pages(
+    payload: FacebookPageDiscoveryRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_authenticated_user),
+):
+    normalized_token = payload.user_access_token.strip()
+    if not normalized_token:
+        raise HTTPException(status_code=400, detail="Bạn cần nhập User Access Token để tải danh sách fanpage.")
+
+    if normalized_token.startswith("http://") or normalized_token.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Liên kết webhook cũ không thể dùng để tải danh sách fanpage.")
+
+    discovery, _ = _load_discovered_pages_by_id(normalized_token)
+
+    existing_page_ids = {
+        page_id
+        for (page_id,) in db.query(FacebookPage.page_id).all()
+    }
+    pages = [
+        serialize_discovered_page(page_data, existing_page_ids=existing_page_ids)
+        for page_data in discovery.get("pages", [])
+    ]
+
+    return {
+        "message": discovery.get("message") or f"Đã tải {len(pages)} fanpage.",
+        "token_kind": discovery.get("token_kind"),
+        "token_subject_id": discovery.get("token_subject_id"),
+        "token_subject_name": discovery.get("token_subject_name"),
+        "pages": pages,
+    }
+
+
+@router.post("/config/import-pages")
+def import_facebook_pages(
+    payload: FacebookPageBulkImportRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_authenticated_user),
+):
+    normalized_token = payload.user_access_token.strip()
+    if not normalized_token:
+        raise HTTPException(status_code=400, detail="Bạn cần nhập User Access Token để import fanpage.")
+
+    selected_page_ids = [page_id.strip() for page_id in payload.page_ids if page_id and page_id.strip()]
+    if not selected_page_ids:
+        raise HTTPException(status_code=400, detail="Bạn cần chọn ít nhất một fanpage để import.")
+
+    discovery, discovered_pages = _load_discovered_pages_by_id(normalized_token)
+
+    missing_page_ids = [page_id for page_id in selected_page_ids if page_id not in discovered_pages]
+    if missing_page_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Một số fanpage không còn xuất hiện trong danh sách token hiện tại: {', '.join(missing_page_ids)}.",
+        )
+
+    imported_pages = []
+    for page_id in selected_page_ids:
+        page_data = discovered_pages[page_id]
+        page_access_token = (page_data.get("page_access_token") or "").strip()
+        if not page_access_token:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Fanpage {page_data.get('page_name') or page_id} chưa có Page Access Token trong phản hồi từ Facebook.",
+            )
+
+        inspection = _validate_page_access_token(page_id, page_access_token)
+        page = _upsert_facebook_page(
+            db,
+            page_id=page_id,
+            page_name=(page_data.get("page_name") or page_id).strip(),
+            access_token=page_access_token,
+        )
+        imported_pages.append(
+            {
+                "page": serialize_page_config(page),
+                "validation": inspection,
+            }
+        )
+
+    db.commit()
+
+    record_event(
+        "facebook",
+        "info",
+        "Đã import hàng loạt fanpage từ User Access Token.",
+        db=db,
+        details={
+            "count": len(imported_pages),
+            "page_ids": selected_page_ids,
+            "token_subject_id": discovery.get("token_subject_id"),
+            "token_subject_name": discovery.get("token_subject_name"),
+        },
+    )
+
+    return {
+        "message": f"Đã import {len(imported_pages)} fanpage vào hệ thống.",
+        "imported_pages": imported_pages,
+        "token_subject_id": discovery.get("token_subject_id"),
+        "token_subject_name": discovery.get("token_subject_name"),
+    }
+
+
+@router.post("/config/refresh-pages")
+def refresh_facebook_pages(
+    payload: FacebookPageBulkRefreshRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_authenticated_user),
+):
+    normalized_token = payload.user_access_token.strip()
+    if not normalized_token:
+        raise HTTPException(status_code=400, detail="Bạn cần nhập User Access Token để làm mới token fanpage.")
+
+    discovery, discovered_pages = _load_discovered_pages_by_id(normalized_token)
+
+    selected_page_ids = [page_id.strip() for page_id in payload.page_ids if page_id and page_id.strip()]
+    configured_pages_query = db.query(FacebookPage)
+    if selected_page_ids:
+        configured_pages_query = configured_pages_query.filter(FacebookPage.page_id.in_(selected_page_ids))
+    configured_pages = configured_pages_query.all()
+    if not configured_pages:
+        raise HTTPException(status_code=404, detail="Không có fanpage nào trong hệ thống để làm mới token.")
+
+    refreshed_pages = []
+    missing_page_ids = []
+    for page in configured_pages:
+        page_data = discovered_pages.get(page.page_id)
+        if not page_data:
+            missing_page_ids.append(page.page_id)
+            continue
+
+        page_access_token = (page_data.get("page_access_token") or "").strip()
+        if not page_access_token:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Fanpage {page.page_name or page.page_id} chưa có Page Access Token trong phản hồi từ Facebook.",
+            )
+
+        inspection = _validate_page_access_token(page.page_id, page_access_token)
+        page.page_name = (page_data.get("page_name") or page.page_name or page.page_id).strip()
+        page.long_lived_access_token = encrypt_secret(page_access_token)
+        refreshed_pages.append(
+            {
+                "page": serialize_page_config(page),
+                "validation": inspection,
+            }
+        )
+
+    if not refreshed_pages:
+        missing_text = ", ".join(missing_page_ids) if missing_page_ids else "không có fanpage phù hợp"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Không thể làm mới token. Token hiện tại không trả về fanpage nào đã cấu hình trong hệ thống ({missing_text}).",
+        )
+
+    db.commit()
+
+    record_event(
+        "facebook",
+        "info",
+        "Đã làm mới Page Access Token cho các fanpage đã cấu hình.",
+        db=db,
+        details={
+            "count": len(refreshed_pages),
+            "page_ids": [item["page"]["page_id"] for item in refreshed_pages],
+            "missing_page_ids": missing_page_ids,
+            "token_subject_id": discovery.get("token_subject_id"),
+            "token_subject_name": discovery.get("token_subject_name"),
+        },
+    )
+
+    return {
+        "message": f"Đã làm mới token cho {len(refreshed_pages)} fanpage.",
+        "refreshed_pages": refreshed_pages,
+        "skipped_page_ids": missing_page_ids,
+        "token_subject_id": discovery.get("token_subject_id"),
+        "token_subject_name": discovery.get("token_subject_name"),
+    }
+
 @router.get("/config")
-def get_facebook_config(db: Session = Depends(get_db)):
+def get_facebook_config(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_authenticated_user),
+):
     pages = db.query(FacebookPage).all()
     should_commit = False
     normalized_pages = []
@@ -153,6 +453,56 @@ def get_facebook_config(db: Session = Depends(get_db)):
         db.commit()
 
     return normalized_pages
+
+
+@router.delete("/config/{page_id}")
+def delete_facebook_page(
+    page_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    page = db.query(FacebookPage).filter(FacebookPage.page_id == page_id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Không tìm thấy fanpage cần xóa.")
+
+    linked_campaigns = (
+        db.query(Campaign)
+        .filter(Campaign.target_page_id == page_id)
+        .order_by(Campaign.name.asc())
+        .all()
+    )
+    if linked_campaigns:
+        campaign_names = ", ".join(campaign.name or str(campaign.id) for campaign in linked_campaigns[:5])
+        extra = "" if len(linked_campaigns) <= 5 else f" và {len(linked_campaigns) - 5} chiến dịch khác"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Fanpage này vẫn đang được dùng trong {len(linked_campaigns)} chiến dịch ({campaign_names}{extra}). Hãy đổi hoặc xóa chiến dịch trước khi xóa fanpage.",
+        )
+
+    cleanup_stats = _delete_page_related_data(db, page_id)
+    page_name = page.page_name
+    db.delete(page)
+    db.commit()
+
+    record_event(
+        "facebook",
+        "warning",
+        "Đã xóa fanpage khỏi hệ thống.",
+        db=db,
+        actor_user_id=str(current_user.id),
+        details={
+            "page_id": page_id,
+            "page_name": page_name,
+            **cleanup_stats,
+        },
+    )
+
+    return {
+        "message": f"Đã xóa fanpage {page_name or page_id} khỏi hệ thống.",
+        "page_id": page_id,
+        "page_name": page_name,
+        **cleanup_stats,
+    }
 
 
 @router.patch("/config/{page_id}/automation")

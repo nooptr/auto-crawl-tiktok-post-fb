@@ -1,9 +1,9 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.models.models import ConversationStatus, FacebookPage, InboxConversation, InboxMessageLog, InteractionStatus, TaskQueue, User
+from app.models.models import Campaign, ConversationStatus, FacebookPage, InboxConversation, InboxMessageLog, InteractionLog, InteractionStatus, TaskQueue, User
 from app.services.security import encrypt_secret
-from app.services.task_queue import TASK_TYPE_MESSAGE_REPLY, enqueue_task
+from app.services.task_queue import TASK_TYPE_COMMENT_REPLY, TASK_TYPE_MESSAGE_REPLY, enqueue_task
 from app.worker.tasks import process_task_queue
 
 
@@ -18,6 +18,34 @@ def mock_page_access(page_id: str, access_token: str):
         "page_name": "Trang demo",
         "page_link": "https://facebook.com/demo-page",
         "fan_count": 123,
+    }
+
+
+def mock_user_pages(access_token: str):
+    return {
+        "ok": True,
+        "message": "Đã tải 2 fanpage từ tài khoản kiểm thử.",
+        "token_kind": "user_access_token",
+        "token_subject_id": "user-123",
+        "token_subject_name": "Người dùng kiểm thử",
+        "pages": [
+            {
+                "page_id": "page-a",
+                "page_name": "Trang A",
+                "page_access_token": "page-token-a",
+                "page_link": "https://facebook.com/page-a",
+                "category": "Website",
+                "tasks": ["CREATE_CONTENT", "MESSAGING"],
+            },
+            {
+                "page_id": "page-b",
+                "page_name": "Trang B",
+                "page_access_token": "page-token-b",
+                "page_link": "https://facebook.com/page-b",
+                "category": "Gaming",
+                "tasks": ["CREATE_CONTENT"],
+            },
+        ],
     }
 
 
@@ -68,6 +96,120 @@ def test_can_save_page_automation_settings(client, auth_headers, monkeypatch):
     assert page_payload["message_auto_reply_enabled"] is True
     assert page_payload["message_reply_schedule_enabled"] is True
     assert page_payload["message_reply_cooldown_minutes"] == 15
+
+
+def test_can_discover_pages_from_user_access_token(client, auth_headers, monkeypatch):
+    from app.api import facebook as facebook_api
+
+    monkeypatch.setattr(facebook_api, "inspect_user_pages", mock_user_pages)
+
+    response = client.post(
+        "/facebook/config/discover-pages",
+        headers=auth_headers,
+        json={"user_access_token": "user-token-123456"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["token_kind"] == "user_access_token"
+    assert payload["token_subject_id"] == "user-123"
+    assert len(payload["pages"]) == 2
+    assert payload["pages"][0]["page_id"] == "page-a"
+    assert payload["pages"][0]["already_configured"] is False
+    assert payload["pages"][0]["has_page_access_token"] is True
+
+
+def test_can_import_selected_pages_from_user_access_token(client, auth_headers, monkeypatch, db_session):
+    from app.api import facebook as facebook_api
+
+    monkeypatch.setattr(facebook_api, "inspect_user_pages", mock_user_pages)
+    monkeypatch.setattr(facebook_api, "inspect_page_access", mock_page_access)
+
+    response = client.post(
+        "/facebook/config/import-pages",
+        headers=auth_headers,
+        json={
+            "user_access_token": "user-token-123456",
+            "page_ids": ["page-a", "page-b"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "Đã import 2 fanpage" in payload["message"]
+    assert len(payload["imported_pages"]) == 2
+    assert payload["imported_pages"][0]["validation"]["token_kind"] == "page_access_token"
+
+    pages = db_session.query(FacebookPage).order_by(FacebookPage.page_id.asc()).all()
+    assert [page.page_id for page in pages] == ["page-a", "page-b"]
+    assert pages[0].page_name == "Trang A"
+
+
+def test_can_refresh_existing_pages_from_user_access_token(client, auth_headers, monkeypatch, db_session):
+    from app.api import facebook as facebook_api
+
+    db_session.add_all(
+        [
+            FacebookPage(
+                page_id="page-a",
+                page_name="Trang A cũ",
+                long_lived_access_token=encrypt_secret("old-token-a"),
+            ),
+            FacebookPage(
+                page_id="page-z",
+                page_name="Trang Z",
+                long_lived_access_token=encrypt_secret("old-token-z"),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(facebook_api, "inspect_user_pages", mock_user_pages)
+    monkeypatch.setattr(facebook_api, "inspect_page_access", mock_page_access)
+
+    response = client.post(
+        "/facebook/config/refresh-pages",
+        headers=auth_headers,
+        json={
+            "user_access_token": "user-token-123456",
+            "page_ids": ["page-a", "page-z"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "Đã làm mới token cho 1 fanpage" in payload["message"]
+    assert len(payload["refreshed_pages"]) == 1
+    assert payload["refreshed_pages"][0]["page"]["page_id"] == "page-a"
+    assert payload["skipped_page_ids"] == ["page-z"]
+
+    db_session.expire_all()
+    saved_page = db_session.query(FacebookPage).filter(FacebookPage.page_id == "page-a").first()
+    assert saved_page.page_name == "Trang A"
+
+
+def test_discover_pages_rejects_page_access_token(client, auth_headers, monkeypatch):
+    from app.api import facebook as facebook_api
+
+    monkeypatch.setattr(
+        facebook_api,
+        "inspect_user_pages",
+        lambda access_token: {
+            "ok": False,
+            "message": "Mã truy cập hiện tại là Page Access Token. Hãy dùng User Access Token để tải danh sách nhiều fanpage.",
+            "token_kind": "page_access_token",
+            "pages": [],
+        },
+    )
+
+    response = client.post(
+        "/facebook/config/discover-pages",
+        headers=auth_headers,
+        json={"user_access_token": "page-token-123456"},
+    )
+
+    assert response.status_code == 400
+    assert "User Access Token" in response.json()["detail"]
 
 
 def test_rejects_user_access_token_when_saving_page(client, auth_headers, monkeypatch):
@@ -926,6 +1068,106 @@ def test_can_update_conversation_status_assignment_and_note(client, auth_headers
     assert saved_conversation.needs_human_handoff is True
     assert saved_conversation.handoff_reason == "Cần nhân viên tư vấn chốt cấu hình."
     assert saved_conversation.internal_note == "Khách hỏi combo gear cho FPS."
+
+
+def test_delete_page_is_blocked_when_campaign_still_targets_it(client, auth_headers, db_session):
+    page = FacebookPage(
+        page_id="page-delete-blocked",
+        page_name="Trang bị khóa xóa",
+        long_lived_access_token=encrypt_secret("page-token-delete-blocked"),
+    )
+    campaign = Campaign(
+        name="Chiến dịch đang dùng page",
+        source_url="https://www.tiktok.com/@demo",
+        target_page_id="page-delete-blocked",
+    )
+    db_session.add(page)
+    db_session.add(campaign)
+    db_session.commit()
+
+    response = client.delete("/facebook/config/page-delete-blocked", headers=auth_headers)
+
+    assert response.status_code == 400
+    assert "Chiến dịch đang dùng page" in response.json()["detail"]
+    assert db_session.query(FacebookPage).filter(FacebookPage.page_id == "page-delete-blocked").first() is not None
+
+
+def test_delete_page_cleans_related_logs_and_tasks(client, auth_headers, db_session):
+    page = FacebookPage(
+        page_id="page-delete-ok",
+        page_name="Trang xóa được",
+        long_lived_access_token=encrypt_secret("page-token-delete-ok"),
+    )
+    db_session.add(page)
+    db_session.commit()
+
+    conversation = InboxConversation(
+        page_id="page-delete-ok",
+        sender_id="user-delete-ok",
+        recipient_id="page-delete-ok",
+        status=ConversationStatus.operator_active,
+        needs_human_handoff=True,
+    )
+    db_session.add(conversation)
+    db_session.commit()
+    db_session.refresh(conversation)
+
+    message_log = InboxMessageLog(
+        page_id="page-delete-ok",
+        conversation_id=conversation.id,
+        facebook_message_id="mid.delete.ok.1",
+        sender_id="user-delete-ok",
+        recipient_id="page-delete-ok",
+        user_message="Xin chào",
+        status=InteractionStatus.pending,
+    )
+    interaction_log = InteractionLog(
+        page_id="page-delete-ok",
+        post_id="post-delete-ok",
+        comment_id="comment-delete-ok",
+        user_id="user-delete-ok",
+        user_message="Comment test",
+        status=InteractionStatus.pending,
+    )
+    db_session.add(message_log)
+    db_session.add(interaction_log)
+    db_session.commit()
+    db_session.refresh(message_log)
+    db_session.refresh(interaction_log)
+
+    enqueue_task(
+        db_session,
+        task_type=TASK_TYPE_MESSAGE_REPLY,
+        entity_type="inbox_message_log",
+        entity_id=str(message_log.id),
+        payload={"message_log_id": str(message_log.id)},
+        priority=10,
+    )
+    enqueue_task(
+        db_session,
+        task_type=TASK_TYPE_COMMENT_REPLY,
+        entity_type="interaction_log",
+        entity_id=str(interaction_log.id),
+        payload={"interaction_log_id": str(interaction_log.id)},
+        priority=10,
+    )
+
+    response = client.delete("/facebook/config/page-delete-ok", headers=auth_headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["page_id"] == "page-delete-ok"
+    assert payload["deleted_message_logs"] == 1
+    assert payload["deleted_conversations"] == 1
+    assert payload["deleted_interactions"] == 1
+    assert payload["deleted_tasks"] == 2
+
+    db_session.expire_all()
+    assert db_session.query(FacebookPage).filter(FacebookPage.page_id == "page-delete-ok").first() is None
+    assert db_session.query(InboxConversation).filter(InboxConversation.page_id == "page-delete-ok").count() == 0
+    assert db_session.query(InboxMessageLog).filter(InboxMessageLog.page_id == "page-delete-ok").count() == 0
+    assert db_session.query(InteractionLog).filter(InteractionLog.page_id == "page-delete-ok").count() == 0
+    assert db_session.query(TaskQueue).count() == 0
 
 
 def test_resolved_conversation_reopens_ai_on_new_customer_message(client, db_session):

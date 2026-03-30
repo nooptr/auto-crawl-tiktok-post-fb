@@ -252,6 +252,75 @@ def inspect_page_access(page_id: str, access_token: str):
     }
 
 
+def inspect_user_pages(access_token: str):
+    try:
+        token_subject = _graph_get(
+            "me",
+            params={"fields": "id,name", "access_token": access_token},
+            timeout=30,
+        )
+        if not token_subject["ok"]:
+            return {
+                "ok": False,
+                "message": token_subject["message"],
+                "token_kind": "invalid_token",
+                "pages": [],
+            }
+
+        accounts_result = _graph_get(
+            "me/accounts",
+            params={
+                "fields": "id,name,access_token,category,link,tasks",
+                "limit": 100,
+                "access_token": access_token,
+            },
+            timeout=30,
+        )
+        if not accounts_result["ok"]:
+            message = accounts_result["message"]
+            token_kind = "invalid_token"
+            if "Page Access Token" in message or "Object with ID 'me' does not exist" in message:
+                token_kind = "page_access_token"
+                message = "Mã truy cập hiện tại là Page Access Token. Hãy dùng User Access Token để tải danh sách nhiều fanpage."
+            return {
+                "ok": False,
+                "message": message,
+                "token_kind": token_kind,
+                "token_subject_id": token_subject["data"].get("id"),
+                "token_subject_name": token_subject["data"].get("name"),
+                "pages": [],
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"Không thể kết nối tới Facebook Graph API: {exc}",
+            "token_kind": "network_error",
+            "pages": [],
+        }
+
+    pages = []
+    for page in accounts_result["data"].get("data", []):
+        pages.append(
+            {
+                "page_id": page.get("id"),
+                "page_name": page.get("name"),
+                "page_access_token": page.get("access_token"),
+                "page_link": page.get("link"),
+                "category": page.get("category"),
+                "tasks": page.get("tasks") or [],
+            }
+        )
+
+    return {
+        "ok": True,
+        "message": f"Đã tải {len(pages)} fanpage từ tài khoản {token_subject['data'].get('name', 'Facebook User')}.",
+        "token_kind": "user_access_token",
+        "token_subject_id": token_subject["data"].get("id"),
+        "token_subject_name": token_subject["data"].get("name"),
+        "pages": pages,
+    }
+
+
 def check_facebook_graph_health(page_id: str | None, access_token: str | None):
     if not page_id or not access_token:
         return {

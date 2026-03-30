@@ -771,6 +771,10 @@ function App() {
   const [formData, setFormData] = useState({ name: '', source_url: '', auto_post: false, target_page_id: '', schedule_interval: 30 });
   const [fbPages, setFbPages] = useState([]);
   const [fbForm, setFbForm] = useState({ page_id: '', page_name: '', long_lived_access_token: '' });
+  const [fbImportToken, setFbImportToken] = useState('');
+  const [discoveredFbPages, setDiscoveredFbPages] = useState([]);
+  const [selectedDiscoveredPageIds, setSelectedDiscoveredPageIds] = useState([]);
+  const [discoverySubject, setDiscoverySubject] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [page, setPage] = useState(1);
@@ -869,6 +873,8 @@ function App() {
   const selectedConversationStatusMeta = getConversationStatusMeta(selectedConversation?.status);
   const selectedConversationTimeline = buildConversationTimeline(selectedConversationLogs);
   const assignableUsers = isAdmin ? users.filter((user) => user.is_active) : (currentUser ? [currentUser] : []);
+  const allDiscoveredSelected = discoveredFbPages.length > 0
+    && selectedDiscoveredPageIds.length === discoveredFbPages.length;
 
   const authFetch = async (url, options = {}) => {
     if (sessionExpiresAt && new Date(sessionExpiresAt).getTime() <= Date.now()) {
@@ -1177,6 +1183,149 @@ function App() {
         ...current,
         [payload.page.page_id]: buildPageCheckSnapshot(payload),
       }));
+    }
+  };
+
+  const handleDiscoverFacebookPages = async (event) => {
+    event.preventDefault();
+    const userAccessToken = fbImportToken.trim();
+    if (!userAccessToken) {
+      showNotice('error', 'Bạn cần dán User Access Token trước khi tải danh sách fanpage.');
+      return;
+    }
+
+    const payload = await runAction('discover-pages', () => requestJson(`${API_URL}/facebook/config/discover-pages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_access_token: userAccessToken }),
+    }));
+
+    if (payload) {
+      const pages = payload.pages || [];
+      setDiscoveredFbPages(pages);
+      setDiscoverySubject({
+        token_subject_id: payload.token_subject_id,
+        token_subject_name: payload.token_subject_name,
+      });
+      const preferredSelection = pages
+        .filter((pageItem) => !pageItem.already_configured)
+        .map((pageItem) => pageItem.page_id);
+      setSelectedDiscoveredPageIds(
+        preferredSelection.length > 0
+          ? preferredSelection
+          : pages.map((pageItem) => pageItem.page_id),
+      );
+    }
+  };
+
+  const handleToggleDiscoveredPage = (pageId) => {
+    setSelectedDiscoveredPageIds((current) => (
+      current.includes(pageId)
+        ? current.filter((item) => item !== pageId)
+        : [...current, pageId]
+    ));
+  };
+
+  const handleToggleAllDiscoveredPages = () => {
+    setSelectedDiscoveredPageIds(
+      allDiscoveredSelected
+        ? []
+        : discoveredFbPages.map((pageItem) => pageItem.page_id),
+    );
+  };
+
+  const handleImportFacebookPages = async () => {
+    const userAccessToken = fbImportToken.trim();
+    if (!userAccessToken) {
+      showNotice('error', 'Bạn cần dán User Access Token để import fanpage.');
+      return;
+    }
+    if (selectedDiscoveredPageIds.length === 0) {
+      showNotice('error', 'Hãy chọn ít nhất một fanpage để import.');
+      return;
+    }
+
+    const payload = await runAction('import-pages', () => requestJson(`${API_URL}/facebook/config/import-pages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_access_token: userAccessToken,
+        page_ids: selectedDiscoveredPageIds,
+      }),
+    }));
+
+    if (payload?.imported_pages) {
+      setPageChecks((current) => {
+        const next = { ...current };
+        payload.imported_pages.forEach((item) => {
+          if (item?.page?.page_id && item?.validation) {
+            next[item.page.page_id] = buildPageCheckSnapshot(item);
+          }
+        });
+        return next;
+      });
+      setDiscoveredFbPages([]);
+      setSelectedDiscoveredPageIds([]);
+      setDiscoverySubject(null);
+      setFbImportToken('');
+    }
+  };
+
+  const handleRefreshFacebookPages = async () => {
+    const userAccessToken = fbImportToken.trim();
+    if (!userAccessToken) {
+      showNotice('error', 'Bạn cần dán User Access Token để làm mới token fanpage.');
+      return;
+    }
+    if (fbPages.length === 0) {
+      showNotice('error', 'Chưa có fanpage nào trong hệ thống để làm mới token.');
+      return;
+    }
+
+    const payload = await runAction('refresh-pages', () => requestJson(`${API_URL}/facebook/config/refresh-pages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_access_token: userAccessToken,
+        page_ids: fbPages.map((pageItem) => pageItem.page_id),
+      }),
+    }));
+
+    if (payload?.refreshed_pages) {
+      setPageChecks((current) => {
+        const next = { ...current };
+        payload.refreshed_pages.forEach((item) => {
+          if (item?.page?.page_id && item?.validation) {
+            next[item.page.page_id] = buildPageCheckSnapshot(item);
+          }
+        });
+        return next;
+      });
+    }
+  };
+
+  const handleDeleteFacebookPage = async (pageId, pageName) => {
+    const confirmed = window.confirm(`Bạn có chắc muốn xóa fanpage "${pageName}" khỏi hệ thống không?`);
+    if (!confirmed) return;
+
+    const payload = await runAction(`delete-page-${pageId}`, () => requestJson(`${API_URL}/facebook/config/${pageId}`, {
+      method: 'DELETE',
+    }));
+
+    if (payload?.page_id) {
+      setPageChecks((current) => {
+        const next = { ...current };
+        delete next[payload.page_id];
+        return next;
+      });
+      setReplyAutomationDrafts((current) => {
+        const next = { ...current };
+        delete next[payload.page_id];
+        return next;
+      });
+      if (formData.target_page_id === payload.page_id) {
+        setFormData((current) => ({ ...current, target_page_id: '' }));
+      }
     }
   };
 
@@ -1723,6 +1872,21 @@ function App() {
                   </div>
                   <div className="mt-3 text-sm text-[var(--text-soft)]">{pageItem.token_preview || 'Chưa có token để hiển thị.'}</div>
                   <div className="mt-2 text-xs text-[var(--text-muted)]">{messengerMeta.detail}</div>
+                  <div className="mt-4 mobile-action-stack sm:justify-end">
+                    <button type="button" className={BUTTON_SECONDARY} onClick={() => handleValidatePage(pageItem.page_id)} disabled={actionState[`page-validate-${pageItem.page_id}`]}>
+                      <ShieldCheck className="h-4 w-4" />
+                      {actionState[`page-validate-${pageItem.page_id}`] ? 'Đang kiểm tra...' : 'Xác minh & kiểm tra'}
+                    </button>
+                    <button
+                      type="button"
+                      className={cx(BUTTON_GHOST, 'border-rose-400/20 bg-rose-400/10 text-rose-100 hover:border-rose-400/30 hover:bg-rose-400/15')}
+                      onClick={() => handleDeleteFacebookPage(pageItem.page_id, pageItem.page_name)}
+                      disabled={!isAdmin || actionState[`delete-page-${pageItem.page_id}`]}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      {actionState[`delete-page-${pageItem.page_id}`] ? 'Đang xóa...' : 'Xóa fanpage'}
+                    </button>
+                  </div>
                 </div>
               );
             })
@@ -1843,25 +2007,157 @@ function App() {
         })()}
       </Panel>
 
-      <Panel className="2xl:col-span-5" eyebrow="Fanpage" title="Kết nối hoặc cập nhật trang Facebook">
-        <form onSubmit={handleFbSubmit} className="space-y-4">
-          <label className="block space-y-2">
-            <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">Mã trang</span>
-            <input required type="text" className={FIELD_CLASS} placeholder="Page ID" value={fbForm.page_id} onChange={(event) => setFbForm({ ...fbForm, page_id: event.target.value })} />
-          </label>
-          <label className="block space-y-2">
-            <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">Tên trang</span>
-            <input required type="text" className={FIELD_CLASS} placeholder="Tên fanpage" value={fbForm.page_name} onChange={(event) => setFbForm({ ...fbForm, page_name: event.target.value })} />
-          </label>
-          <label className="block space-y-2">
-            <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">Page Access Token</span>
-            <input required type="password" className={FIELD_CLASS} placeholder="Dán token trang Facebook thật" value={fbForm.long_lived_access_token} onChange={(event) => setFbForm({ ...fbForm, long_lived_access_token: event.target.value })} />
-          </label>
-          <button type="submit" disabled={actionState['save-page']} className={cx(BUTTON_PRIMARY, 'w-full')}>
-            <Globe2 className="h-4 w-4" />
-            {actionState['save-page'] ? 'Đang lưu token...' : 'Lưu cấu hình fanpage'}
-          </button>
-        </form>
+      <Panel className="2xl:col-span-5" eyebrow="Fanpage" title="Kết nối nhiều trang từ một app Meta">
+        <div className="space-y-5">
+          <form onSubmit={handleDiscoverFacebookPages} className="rounded-[24px] border border-white/8 bg-black/10 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="font-medium text-white">Import fanpage bằng User Access Token</div>
+                <div className="mt-2 text-sm leading-7 text-[var(--text-soft)]">
+                  Dùng một app Meta chung để tải danh sách fanpage bạn đang quản lý, rồi chọn nhiều trang để lưu vào hệ thống.
+                </div>
+              </div>
+              <StatusPill tone="sky">Khuyến nghị</StatusPill>
+            </div>
+            <label className="mt-4 block space-y-2">
+              <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">User Access Token</span>
+              <input
+                required
+                type="password"
+                className={FIELD_CLASS}
+                placeholder="Dán User Access Token có quyền pages_show_list"
+                value={fbImportToken}
+                onChange={(event) => setFbImportToken(event.target.value)}
+              />
+            </label>
+            <div className="mt-4 mobile-action-stack">
+              <button type="submit" disabled={actionState['discover-pages']} className={BUTTON_PRIMARY}>
+                <Globe2 className="h-4 w-4" />
+                {actionState['discover-pages'] ? 'Đang tải danh sách...' : 'Tải danh sách fanpage'}
+              </button>
+              <button
+                type="button"
+                className={BUTTON_SECONDARY}
+                onClick={handleRefreshFacebookPages}
+                disabled={fbPages.length === 0 || actionState['refresh-pages']}
+              >
+                <RefreshCw className="h-4 w-4" />
+                {actionState['refresh-pages'] ? 'Đang làm mới...' : 'Làm mới token fanpage đã có'}
+              </button>
+              {discoveredFbPages.length > 0 ? (
+                <button type="button" className={BUTTON_GHOST} onClick={handleToggleAllDiscoveredPages}>
+                  {allDiscoveredSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                </button>
+              ) : null}
+            </div>
+            {discoverySubject ? (
+              <div className="mt-4 rounded-[20px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-[var(--text-soft)]">
+                Đang xem fanpage của <span className="font-medium text-white">{discoverySubject.token_subject_name || discoverySubject.token_subject_id}</span>
+              </div>
+            ) : null}
+          </form>
+
+          {discoveredFbPages.length > 0 ? (
+            <div className="rounded-[24px] border border-white/8 bg-black/10 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="font-medium text-white">Chọn fanpage cần import</div>
+                  <div className="mt-2 text-sm text-[var(--text-soft)]">
+                    Hệ thống sẽ lấy luôn Page Access Token của từng fanpage được chọn từ User Access Token hiện tại.
+                  </div>
+                </div>
+                <StatusPill tone="amber">{selectedDiscoveredPageIds.length}/{discoveredFbPages.length} đã chọn</StatusPill>
+              </div>
+              <div className="mt-4 space-y-3">
+                {discoveredFbPages.map((pageItem) => {
+                  const isSelected = selectedDiscoveredPageIds.includes(pageItem.page_id);
+                  return (
+                    <label
+                      key={pageItem.page_id}
+                      className={cx(
+                        'flex cursor-pointer items-start gap-3 rounded-[20px] border px-4 py-4 transition',
+                        isSelected
+                          ? 'border-cyan-400/25 bg-cyan-400/10'
+                          : 'border-white/8 bg-black/10 hover:border-white/15 hover:bg-black/15',
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={isSelected}
+                        onChange={() => handleToggleDiscoveredPage(pageItem.page_id)}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="font-medium text-white">{pageItem.page_name}</div>
+                          {pageItem.already_configured ? <StatusPill tone="amber">Đã có trong hệ thống</StatusPill> : null}
+                          {pageItem.has_page_access_token ? <StatusPill tone="emerald">Có Page Token</StatusPill> : <StatusPill tone="rose">Thiếu Page Token</StatusPill>}
+                        </div>
+                        <div className="mt-1 text-xs text-[var(--text-muted)]">{pageItem.page_id}</div>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <InfoRow label="Danh mục" value={pageItem.category || 'Chưa rõ'} compact />
+                          <InfoRow label="Quyền" value={(pageItem.tasks || []).join(', ') || 'Chưa có'} compact />
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="mt-4 mobile-action-stack">
+                <button
+                  type="button"
+                  className={BUTTON_PRIMARY}
+                  onClick={handleImportFacebookPages}
+                  disabled={selectedDiscoveredPageIds.length === 0 || actionState['import-pages']}
+                >
+                  <PlusCircle className="h-4 w-4" />
+                  {actionState['import-pages'] ? 'Đang import...' : 'Import fanpage đã chọn'}
+                </button>
+                <button
+                  type="button"
+                  className={BUTTON_GHOST}
+                  onClick={() => {
+                    setDiscoveredFbPages([]);
+                    setSelectedDiscoveredPageIds([]);
+                    setDiscoverySubject(null);
+                  }}
+                >
+                  Xóa danh sách
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <form onSubmit={handleFbSubmit} className="rounded-[24px] border border-white/8 bg-black/10 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="font-medium text-white">Nhập tay fanpage</div>
+                <div className="mt-2 text-sm text-[var(--text-soft)]">
+                  Giữ làm chế độ dự phòng khi bạn chỉ muốn thêm một trang riêng lẻ bằng Page Access Token.
+                </div>
+              </div>
+              <StatusPill tone="slate">Fallback</StatusPill>
+            </div>
+            <div className="mt-4 space-y-4">
+              <label className="block space-y-2">
+                <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">Mã trang</span>
+                <input required type="text" className={FIELD_CLASS} placeholder="Page ID" value={fbForm.page_id} onChange={(event) => setFbForm({ ...fbForm, page_id: event.target.value })} />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">Tên trang</span>
+                <input required type="text" className={FIELD_CLASS} placeholder="Tên fanpage" value={fbForm.page_name} onChange={(event) => setFbForm({ ...fbForm, page_name: event.target.value })} />
+              </label>
+              <label className="block space-y-2">
+                <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">Page Access Token</span>
+                <input required type="password" className={FIELD_CLASS} placeholder="Dán token trang Facebook thật" value={fbForm.long_lived_access_token} onChange={(event) => setFbForm({ ...fbForm, long_lived_access_token: event.target.value })} />
+              </label>
+              <button type="submit" disabled={actionState['save-page']} className={cx(BUTTON_PRIMARY, 'w-full')}>
+                <Globe2 className="h-4 w-4" />
+                {actionState['save-page'] ? 'Đang lưu token...' : 'Lưu cấu hình fanpage'}
+              </button>
+            </div>
+          </form>
+        </div>
       </Panel>
 
       <Panel className="2xl:col-span-4" eyebrow="Danh sách trang" title="Fanpage đang sẵn sàng">
