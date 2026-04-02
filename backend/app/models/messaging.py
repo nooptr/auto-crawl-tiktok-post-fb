@@ -36,6 +36,10 @@ class FacebookPage(Base):
     message_reply_start_time = Column(String, default="08:00", nullable=False)
     message_reply_end_time = Column(String, default="22:00", nullable=False)
     message_reply_cooldown_minutes = Column(Integer, default=0, nullable=False)
+    affiliate_comment_enabled = Column(Boolean, default=False, nullable=False)
+    affiliate_comment_text = Column(String, nullable=True)
+    affiliate_link_url = Column(String, nullable=True)
+    affiliate_comment_delay_seconds = Column(Integer, default=60, nullable=False)
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 

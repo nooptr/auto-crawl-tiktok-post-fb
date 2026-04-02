@@ -22,11 +22,13 @@ import {
   Server,
   Share2,
   ShieldCheck,
+  Terminal,
   Trash2,
   UserPlus,
   X,
   Zap,
 } from 'lucide-react';
+import { loginRequest, requestJson as requestJsonWithSession } from './features/dashboard/api';
 
 const API_URL = '/api';
 const AUTO_REFRESH_MS = 5000;
@@ -198,10 +200,6 @@ const TREND_STATUS_META = {
 
 function cx(...values) {
   return values.filter(Boolean).join(' ');
-}
-
-function parseMessage(payload, fallback) {
-  return payload?.detail || payload?.message || fallback;
 }
 
 function summarizeText(value, fallback = 'Chưa có nội dung.', maxLength = 110) {

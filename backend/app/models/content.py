@@ -21,6 +21,13 @@ class VideoStatus(str, enum.Enum):
     failed = "failed"
 
 
+class AffiliateCommentStatus(str, enum.Enum):
+    disabled = "disabled"
+    queued = "queued"
+    posted = "posted"
+    operator_required = "operator_required"
+
+
 class Campaign(Base):
     __tablename__ = "campaigns"
 
@@ -59,7 +66,16 @@ class Video(Base):
     ai_caption = Column(String, nullable=True)
     status = Column(Enum(VideoStatus), default=VideoStatus.pending)
     publish_time = Column(DateTime, nullable=True)
+    fb_video_id = Column(String, nullable=True)
     fb_post_id = Column(String, nullable=True)
+    fb_permalink_url = Column(String, nullable=True)
+    affiliate_comment_status = Column(Enum(AffiliateCommentStatus), default=AffiliateCommentStatus.disabled, nullable=False)
+    affiliate_comment_text = Column(String, nullable=True)
+    affiliate_comment_fb_id = Column(String, nullable=True)
+    affiliate_comment_error = Column(String, nullable=True)
+    affiliate_comment_attempts = Column(Integer, default=0, nullable=False)
+    affiliate_comment_requested_at = Column(DateTime, nullable=True)
+    affiliate_commented_at = Column(DateTime, nullable=True)
     last_error = Column(String, nullable=True)
     retry_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=utc_now)

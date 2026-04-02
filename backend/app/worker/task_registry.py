@@ -5,8 +5,15 @@ from typing import Callable
 
 from pydantic import BaseModel
 
-from app.services.campaign_jobs import reply_to_comment_job, reply_to_message_job, retry_video_download, sync_campaign_content
+from app.services.campaign_jobs import (
+    post_affiliate_comment_job,
+    reply_to_comment_job,
+    reply_to_message_job,
+    retry_video_download,
+    sync_campaign_content,
+)
 from app.services.task_types import (
+    TASK_TYPE_AFFILIATE_COMMENT,
     TASK_TYPE_CAMPAIGN_SYNC,
     TASK_TYPE_COMMENT_REPLY,
     TASK_TYPE_MESSAGE_REPLY,
@@ -32,6 +39,10 @@ class CommentReplyPayload(BaseModel):
 
 class MessageReplyPayload(BaseModel):
     message_log_id: str
+
+
+class AffiliateCommentPayload(BaseModel):
+    video_id: str
 
 
 @dataclass(frozen=True)
@@ -62,9 +73,14 @@ def _run_message_reply(payload: MessageReplyPayload) -> dict:
     return reply_to_message_job(payload.message_log_id)
 
 
+def _run_affiliate_comment(payload: AffiliateCommentPayload) -> dict:
+    return post_affiliate_comment_job(payload.video_id)
+
+
 TASK_REGISTRY: dict[str, TaskDefinition] = {
     TASK_TYPE_CAMPAIGN_SYNC: TaskDefinition(CampaignSyncPayload, _run_campaign_sync),
     TASK_TYPE_VIDEO_RETRY: TaskDefinition(VideoRetryPayload, _run_video_retry),
+    TASK_TYPE_AFFILIATE_COMMENT: TaskDefinition(AffiliateCommentPayload, _run_affiliate_comment),
     TASK_TYPE_COMMENT_REPLY: TaskDefinition(CommentReplyPayload, _run_comment_reply),
     TASK_TYPE_MESSAGE_REPLY: TaskDefinition(MessageReplyPayload, _run_message_reply),
 }

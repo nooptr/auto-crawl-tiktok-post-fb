@@ -1,4 +1,4 @@
-from app.models.content import Campaign, CampaignStatus, Video, VideoStatus
+from app.models.content import AffiliateCommentStatus, Campaign, CampaignStatus, Video, VideoStatus
 from app.models.messaging import (
     ConversationStatus,
     FacebookPage,
@@ -14,6 +14,7 @@ __all__ = [
     "CampaignStatus",
     "ConversationStatus",
     "FacebookPage",
+    "AffiliateCommentStatus",
     "InboxConversation",
     "InboxMessageLog",
     "InteractionLog",
